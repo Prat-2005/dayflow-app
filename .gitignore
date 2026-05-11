@@ -10,6 +10,7 @@ yarn.lock
 # Build outputs
 dist/
 build/
+release/
 *.log
 
 # IDE
@@ -24,6 +25,3 @@ Thumbs.db
 
 # .md file
 PROMPT.md
-
-# Database
-server/supabase/

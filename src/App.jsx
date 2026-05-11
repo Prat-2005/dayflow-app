@@ -23,6 +23,10 @@ export default function App() {
   const [view, setView] = useState('today')
   const [userName, setUserName] = useState(storage.getName())
   const [userEmail, setUserEmail] = useState(storage.getEmail())
+  
+  useEffect(() => {
+    console.log('[App] Electron API present:', !!window.electronAPI)
+  }, [])
 
   // Auth state
   const { user, loading: authLoading, signInWithEmail, signOut } = useAuth()

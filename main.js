@@ -1,9 +1,28 @@
-import { app, BrowserWindow, Tray, Menu, Notification, ipcMain, nativeImage } from 'electron';
+import { app, BrowserWindow, Tray, Menu, Notification, ipcMain, nativeImage, shell } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import Store from 'electron-store';
 import schedule from 'node-schedule';
 import AutoLaunch from 'auto-launch';
+
+// ── Deep-link protocol for Supabase auth callbacks ───────────────────────────
+// Register dayflow:// so magic-link emails redirect back into the desktop app.
+if (process.defaultApp) {
+  if (process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient('dayflow', process.execPath, [path.resolve(process.argv[1])]);
+  }
+} else {
+  app.setAsDefaultProtocolClient('dayflow');
+}
+
+// ── Single-instance lock ─────────────────────────────────────────────────────
+// CRITICAL: Without this, clicking a dayflow:// deep-link opens a SECOND window
+// on Windows instead of forwarding the URL to the existing instance.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  // This is the second instance — just quit, the first instance handles it.
+  app.quit();
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,7 +45,7 @@ function createWindow() {
     minHeight: 500,
     icon: APP_ICON_PATH,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true
     }
@@ -37,6 +56,14 @@ function createWindow() {
     // mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
+  }
+
+  // Forward any deep-link URL that was passed at launch (Windows: second-instance doesn't fire)
+  const launchUrl = process.argv.find(arg => arg.startsWith('dayflow://'));
+  if (launchUrl) {
+    mainWindow.webContents.once('did-finish-load', () => {
+      mainWindow.webContents.send('auth-deep-link', launchUrl);
+    });
   }
 }
 
@@ -58,7 +85,7 @@ function updateTrayBadge() {
   if (!tray) return;
   const tasks = store.get('dayflow-tasks') || [];
   const pendingCount = tasks.filter(t => !t.completed).length;
-  
+
   if (process.platform === 'darwin') {
     app.dock.setBadge(pendingCount > 0 ? pendingCount.toString() : '');
     tray.setTitle(pendingCount > 0 ? pendingCount.toString() : '');
@@ -82,7 +109,7 @@ function scheduleNotifications() {
   schedule.scheduleJob('0 18 * * *', () => {
     const tasks = store.get('dayflow-tasks') || [];
     const pendingCount = tasks.filter(t => !t.completed).length;
-    
+
     if (pendingCount > 0) {
       new Notification({
         title: 'DayFlow',
@@ -110,12 +137,12 @@ app.whenReady().then(() => {
   ipcMain.on('store-get', (event, key) => {
     event.returnValue = store.get(key);
   });
-  
+
   ipcMain.on('store-set', (event, key, val) => {
     store.set(key, val);
     updateTrayBadge();
   });
-  
+
   ipcMain.on('store-delete', (event, key) => {
     store.delete(key);
     updateTrayBadge();
@@ -138,7 +165,7 @@ app.whenReady().then(() => {
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() }
   ]);
-  
+
   tray.setContextMenu(contextMenu);
   tray.on('click', toggleMiniMode);
 
@@ -152,5 +179,30 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
+  }
+});
+
+// ── Deep-link handling ───────────────────────────────────────────────────────
+// Windows: when user clicks dayflow:// link, OS launches a second Electron
+// instance with the URL as a command-line arg. requestSingleInstanceLock()
+// above makes that second instance quit immediately after emitting this event.
+app.on('second-instance', (_event, commandLine) => {
+  const url = commandLine.find(arg => arg.startsWith('dayflow://'));
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+    if (url) {
+      console.log('[Deep-link] second-instance URL:', url);
+      mainWindow.webContents.send('auth-deep-link', url);
+    }
+  }
+});
+
+// macOS: deep-link fires as an open-url event on the existing instance.
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  console.log('[Deep-link] open-url:', url);
+  if (mainWindow) {
+    mainWindow.webContents.send('auth-deep-link', url);
   }
 });

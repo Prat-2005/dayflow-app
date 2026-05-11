@@ -45,4 +45,16 @@ export const storage = {
     if (isElectron) window.electronAPI.storeSet(KEYS.EMAIL, e);
     else localStorage.setItem(KEYS.EMAIL, e);
   },
+  
+  clearAll: () => {
+    if (isElectron) {
+      window.electronAPI.storeDelete(KEYS.TASKS);
+      window.electronAPI.storeDelete(KEYS.NAME);
+      window.electronAPI.storeDelete(KEYS.EMAIL);
+    } else {
+      localStorage.removeItem(KEYS.TASKS);
+      localStorage.removeItem(KEYS.NAME);
+      localStorage.removeItem(KEYS.EMAIL);
+    }
+  }
 }

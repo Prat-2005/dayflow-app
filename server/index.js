@@ -1,17 +1,34 @@
 require('dotenv').config({ path: '../.env' });
 const express = require('express');
 const cors = require('cors');
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 const cron = require('node-cron');
 const webpush = require('web-push');
 const { generateReportHtml } = require('./utils/reportGenerator');
+const { createClient } = require('@supabase/supabase-js');
+
+const supabaseAdmin = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ── Resend setup ─────────────────────────────────────────────────────────────
-const resend = new Resend(process.env.RESEND_API_KEY || 're_placeholder');
+// ── Nodemailer (Gmail SMTP) setup ───────────────────────────────────────────
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER, // Your Gmail email
+    pass: process.env.EMAIL_PASS  // Your Gmail App Password
+  }
+});
+
+transporter.verify((error, success) => {
+  if (error) console.error('[Email] SMTP Connection Error:', error);
+  else console.log('[Email] Gmail SMTP Ready ✓');
+});
 
 // ── Web Push (VAPID) setup ──────────────────────────────────────────────────
 const VAPID_PUBLIC  = process.env.VAPID_PUBLIC_KEY;
@@ -32,18 +49,56 @@ const pushSubscriptions = []; // Array of PushSubscription objects
 // ─── Email helpers ──────────────────────────────────────────────────────────
 async function sendReportEmail(email, subject, htmlContent) {
   try {
-    const data = await resend.emails.send({
-      from: 'DayFlow <onboarding@resend.dev>',
+    const info = await transporter.sendMail({
+      from: `"DayFlow" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: subject,
       html: htmlContent,
     });
-    return data;
+    console.log('[Email] Sent successfully:', info.messageId);
+    return info;
   } catch (error) {
     console.error('Error sending email:', error);
     throw error;
   }
 }
+
+// ─── Auth endpoints ─────────────────────────────────────────────────────────
+app.post('/api/auth/send-magic-link', async (req, res) => {
+  try {
+    const { email, redirectTo } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+
+    // Generate the magic link using Supabase Admin API
+    const { data, error } = await supabaseAdmin.auth.admin.generateLink({
+      type: 'magiclink',
+      email,
+      options: {
+        redirectTo: redirectTo || 'dayflow://auth/callback'
+      }
+    });
+
+    if (error) throw error;
+
+    const actionLink = data.properties.action_link;
+
+    // Send the email directly via Resend SDK
+    const htmlContent = `
+      <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto;">
+        <h2>Sign in to DayFlow</h2>
+        <p>Click the link below to securely sign in to your DayFlow account. This link expires in a few minutes.</p>
+        <a href="${actionLink}" style="display: inline-block; padding: 12px 24px; background-color: #7B61FF; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; margin-top: 16px;">Sign In to DayFlow</a>
+        <p style="margin-top: 32px; font-size: 12px; color: #666;">If you didn't request this email, you can safely ignore it.</p>
+      </div>
+    `;
+
+    const result = await sendReportEmail(email, 'Sign in to DayFlow', htmlContent);
+    res.status(200).json({ success: true, message: 'Magic link sent', data: result });
+  } catch (error) {
+    console.error('Error generating/sending magic link:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // ─── Email report endpoints ─────────────────────────────────────────────────
 app.post('/api/report/weekly', async (req, res) => {
